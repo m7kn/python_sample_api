@@ -54,7 +54,7 @@ class Register(Resource):
     @api.doc(responses={201: 'Success', 400: 'Validation Error'})
     def post(self):
         data = api.payload
-        hashed_password = generate_password_hash(data['password'], method='sha256')
+        hashed_password = generate_password_hash(data['password'], method='pbkdf2:sha256')
         new_user = User(username=data['username'], password=hashed_password)
         db.session.add(new_user)
         db.session.commit()
@@ -76,14 +76,14 @@ class Login(Resource):
 @ns_items.route('/')
 class ItemList(Resource):
     @jwt_required()
-    @api.doc(security='apikey')
+    @api.doc(security='Bearer Auth')
     def get(self):
         items = Item.query.all()
         return [{"id": item.id, "name": item.name, "description": item.description} for item in items], 200
     
     @jwt_required()
     @api.expect(item_model)
-    @api.doc(security='apikey')
+    @api.doc(security='Bearer Auth')
     def post(self):
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
@@ -98,10 +98,11 @@ class ItemList(Resource):
 
 # Add JWT authorization to Swagger UI
 authorizations = {
-    'apikey': {
+    'Bearer Auth': {
         'type': 'apiKey',
         'in': 'header',
-        'name': 'Authorization'
+        'name': 'Authorization',
+        'description': "Type in the *'Value'* input box below: **'Bearer &lt;JWT&gt;'**, where JWT is the token you received from the /auth/login endpoint."
     }
 }
 api.authorizations = authorizations
