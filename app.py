@@ -5,6 +5,7 @@ from flask_jwt_extended import JWTManager, jwt_required, create_access_token, ge
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_restx import Api, Resource, fields
 from dotenv import load_dotenv
+from sqlalchemy.exc import IntegrityError
 
 # Load environment variables
 load_dotenv()
@@ -47,6 +48,7 @@ item_model = api.model('Item', {
     'description': fields.String(required=True, description='Item description')
 })
 
+
 # Authentication routes
 @ns_auth.route('/register')
 class Register(Resource):
@@ -55,10 +57,46 @@ class Register(Resource):
     def post(self):
         data = api.payload
         hashed_password = generate_password_hash(data['password'], method='pbkdf2:sha256')
-        new_user = User(username=data['username'], password=hashed_password)
+        
+        # Check if this is the first user
+        is_first_user = User.query.count() == 0
+        
+        new_user = User(username=data['username'], password=hashed_password, is_admin=is_first_user)
         db.session.add(new_user)
-        db.session.commit()
-        return {"message": "User created successfully"}, 201
+        
+        try:
+            db.session.commit()
+            return {"message": "User created successfully", "is_admin": is_first_user}, 201
+        except IntegrityError:
+            db.session.rollback()
+            return {"message": "Username already exists"}, 400
+
+
+# Admin creation
+@ns_auth.route('/create_admin')
+class CreateAdmin(Resource):
+    @jwt_required()
+    @api.expect(user_model)
+    @api.doc(security='Bearer Auth')
+    def post(self):
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        
+        if not current_user.is_admin:
+            return {"message": "Admin access required"}, 403
+        
+        data = api.payload
+        hashed_password = generate_password_hash(data['password'], method='pbkdf2:sha256')
+        new_admin = User(username=data['username'], password=hashed_password, is_admin=True)
+        
+        try:
+            db.session.add(new_admin)
+            db.session.commit()
+            return {"message": "Admin user created successfully"}, 201
+        except IntegrityError:
+            db.session.rollback()
+            return {"message": "Username already exists"}, 400
+
 
 @ns_auth.route('/login')
 class Login(Resource):
