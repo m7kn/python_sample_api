@@ -60,6 +60,19 @@ The API will be available at `http://localhost:5000`. You can access the Swagger
 
 For more details on the API endpoints and how to use them, please refer to the Swagger documentation available when running the application.
 
+## Using JWT Authentication
+
+1. First, use the `/auth/login` endpoint to obtain a JWT token.
+2. For endpoints that require authentication, use the Authorization header in your requests.
+3. In the Swagger UI:
+   - Click the "Authorize" button.
+   - In the value field, enter: `Bearer <your_jwt_token>` (replace `<your_jwt_token>` with the actual token you received from the login endpoint).
+   - Click "Authorize" to save.
+4. For requests outside of Swagger UI, include the header:
+   ```
+   Authorization: Bearer <your_jwt_token>
+   ```
+
 ## Contributing
 
 Please read CONTRIBUTING.md for details on our code of conduct, and the process for submitting pull requests.
