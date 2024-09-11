@@ -3,9 +3,10 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_restx import Api, Resource, fields
+from flask_restx import Api, Resource, fields, abort
 from dotenv import load_dotenv
 from sqlalchemy.exc import IntegrityError
+from enum import Enum
 
 # Load environment variables
 load_dotenv()
@@ -21,31 +22,40 @@ api = Api(app, version='1.0', title='Sample Python API',
     description='A simple API with Swagger documentation')
 
 # Define namespaces
+ns_admin = api.namespace('admin', description='Admin operations')
 ns_auth = api.namespace('auth', description='Authentication operations')
-ns_items = api.namespace('items', description='Item operations')
+ns_info = api.namespace('info', description='Information operations')
+ns_data = api.namespace('data', description='Data operations')
+
+# Define Role enum
+class Role(Enum):
+    ADMIN = 'admin'
+    EDITOR = 'editor'
+    USER = 'user'
 
 # User model
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
-    is_admin = db.Column(db.Boolean, default=False)
+    role = db.Column(db.Enum(Role), default=Role.USER)
 
-# Item model
-class Item(db.Model):
+# Data model
+class Data(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    description = db.Column(db.String(200))
+    content = db.Column(db.Text, nullable=False)
 
 # Define API models
 user_model = api.model('User', {
     'username': fields.String(required=True, description='Username'),
-    'password': fields.String(required=True, description='Password')
+    'password': fields.String(required=True, description='Password'),
+    'role': fields.String(required=False, description='User role (admin/editor/user)', enum=['admin', 'editor', 'user'], default='user', example='user')    
 })
 
-item_model = api.model('Item', {
+data_model = api.model('Data', {
     'name': fields.String(required=True, description='Item name'),
-    'description': fields.String(required=True, description='Item description')
+    'content': fields.String(required=True, description='Data content')
 })
 
 
@@ -60,21 +70,22 @@ class Register(Resource):
         
         # Check if this is the first user
         is_first_user = User.query.count() == 0
+        role = Role.ADMIN if is_first_user else Role.USER
         
-        new_user = User(username=data['username'], password=hashed_password, is_admin=is_first_user)
+        new_user = User(username=data['username'], password=hashed_password, role=role)
         db.session.add(new_user)
         
         try:
             db.session.commit()
-            return {"message": "User created successfully", "is_admin": is_first_user}, 201
+            return {"message": "User created successfully", "role": role.value}, 201
         except IntegrityError:
             db.session.rollback()
             return {"message": "Username already exists"}, 400
 
 
-# Admin creation
-@ns_auth.route('/create_admin')
-class CreateAdmin(Resource):
+# Admin routes
+@ns_admin.route('/create_user')
+class CreateUser(Resource):
     @jwt_required()
     @api.expect(user_model)
     @api.doc(security='Bearer Auth')
@@ -82,17 +93,17 @@ class CreateAdmin(Resource):
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         
-        if not current_user.is_admin:
+        if current_user.role != Role.ADMIN:
             return {"message": "Admin access required"}, 403
         
         data = api.payload
         hashed_password = generate_password_hash(data['password'], method='pbkdf2:sha256')
-        new_admin = User(username=data['username'], password=hashed_password, is_admin=True)
+        new_user = User(username=data['username'], password=hashed_password, role=Role(data.get('role', 'user')))
         
         try:
-            db.session.add(new_admin)
+            db.session.add(new_user)
             db.session.commit()
-            return {"message": "Admin user created successfully"}, 201
+            return {"message": f"{new_user.role.value.capitalize()} user created successfully"}, 201
         except IntegrityError:
             db.session.rollback()
             return {"message": "Username already exists"}, 400
@@ -110,29 +121,79 @@ class Login(Resource):
             return {"access_token": access_token}, 200
         return {"message": "Invalid credentials"}, 401
 
+
 # Item routes
-@ns_items.route('/')
-class ItemList(Resource):
+@ns_data.route('/')
+class DataList(Resource):
     @jwt_required()
     @api.doc(security='Bearer Auth')
     def get(self):
-        items = Item.query.all()
-        return [{"id": item.id, "name": item.name, "description": item.description} for item in items], 200
+        data = Data.query.all()
+        return [{"id": item.id, "name": item.name, "content": item.content} for item in data], 200
     
     @jwt_required()
-    @api.expect(item_model)
+    @api.expect(data_model)
     @api.doc(security='Bearer Auth')
     def post(self):
         current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
-        if not user.is_admin:
+        current_user = User.query.get(current_user_id)
+        
+        if current_user.role == Role.USER:
+            return {"message": "Editor or Admin access required"}, 403
+        
+        data = api.payload
+        new_data = Data(name=data['name'], content=data['content'])
+        db.session.add(new_data)
+        db.session.commit()
+        return {"message": "Data created successfully"}, 201
+
+
+# Info route
+@ns_info.route('/user')
+class UserInfo(Resource):
+    @jwt_required()
+    @api.doc(security='Bearer Auth')
+    def get(self):
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        return {"username": current_user.username, "role": current_user.role.value}, 200
+
+
+# Add this new model for role change
+role_change_model = api.model('RoleChange', {
+    'username': fields.String(required=True, description='Username of the user to change role'),
+    'new_role': fields.String(required=True, description='New role for the user', enum=['admin', 'editor', 'user'])
+})
+
+# change_role in the admin namespace
+@ns_admin.route('/change_role')
+class ChangeUserRole(Resource):
+    @jwt_required()
+    @api.expect(role_change_model)
+    @api.doc(security='Bearer Auth')
+    def post(self):
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        
+        if current_user.role != Role.ADMIN:
             return {"message": "Admin access required"}, 403
         
         data = api.payload
-        new_item = Item(name=data['name'], description=data['description'])
-        db.session.add(new_item)
+        user_to_change = User.query.filter_by(username=data['username']).first()
+        
+        if not user_to_change:
+            abort(404, f"User {data['username']} not found")
+        
+        try:
+            new_role = Role(data['new_role'])
+        except ValueError:
+            abort(400, f"Invalid role: {data['new_role']}")
+        
+        user_to_change.role = new_role
         db.session.commit()
-        return {"message": "Item created successfully"}, 201
+        
+        return {"message": f"User {data['username']} role changed to {new_role.value}"}, 200
+    
 
 # Add JWT authorization to Swagger UI
 authorizations = {
